@@ -1,0 +1,103 @@
+import pandas as pd
+import numpy as np
+from typing import Dict, List
+import logging
+
+class NFLPlayerValuation:
+    def __init__(self, pbp_path: str, players_path: str):
+        """Initialize with correct column mappings for our data"""
+        self.pbp_data = pd.read_csv(pbp_path, low_memory=False)
+        self.players_data = pd.read_csv(players_path, low_memory=False)
+        
+        # Aggregate QB stats by passer_player_id
+        self.qb_stats = self._calculate_qb_stats()
+        
+        self.position_groups = {
+            'QB': ['QB'],
+            'SKILL': ['RB', 'WR', 'TE'],
+            'OL': ['T', 'G', 'C'],
+            'DL': ['DE', 'DT', 'NT'],
+            'EDGE': ['OLB', 'DE'],
+            'LB': ['ILB', 'MLB', 'OLB'],
+            'DB': ['CB', 'S', 'FS', 'SS']
+        }
+
+    def _calculate_qb_stats(self) -> pd.DataFrame:
+        """Calculate QB statistics from play-by-play data"""
+        qb_stats = (self.pbp_data[self.pbp_data['passer_player_id'].notna()]
+                   .groupby('passer_player_id')
+                   .agg({
+                       'pass_attempt': 'sum',
+                       'complete_pass': 'sum',
+                       'passing_yards': 'sum',
+                       'touchdown': 'sum',
+                       'interception': 'sum',
+                       'sack': 'sum',
+                       'qb_epa': 'mean',
+                       'third_down_converted': 'sum',
+                       'third_down_failed': 'sum',
+                       'air_yards': 'sum'
+                   }).reset_index())
+        
+        # Calculate derived metrics
+        qb_stats['completion_percentage'] = (qb_stats['complete_pass'] / 
+                                           qb_stats['pass_attempt'] * 100)
+        qb_stats['yards_per_attempt'] = qb_stats['passing_yards'] / qb_stats['pass_attempt']
+        qb_stats['touchdown_rate'] = qb_stats['touchdown'] / qb_stats['pass_attempt'] * 100
+        qb_stats['interception_rate'] = qb_stats['interception'] / qb_stats['pass_attempt'] * 100
+        qb_stats['sack_rate'] = qb_stats['sack'] / (qb_stats['pass_attempt'] + qb_stats['sack']) * 100
+        qb_stats['avg_epa'] = qb_stats['qb_epa']
+        qb_stats['third_down_conversion_rate'] = (qb_stats['third_down_converted'] / 
+                                                (qb_stats['third_down_converted'] + 
+                                                 qb_stats['third_down_failed']) * 100)
+        
+        # Merge with player info
+        qb_stats = qb_stats.merge(
+            self.players_data[['smart_id', 'display_name', 'position', 'birth_date']],
+            left_on='passer_player_id',
+            right_on='smart_id',
+            how='left'
+        )
+        
+        return qb_stats
+
+    def normalize_metrics(self, metrics: List[str], by_position: bool = True) -> pd.DataFrame:
+        """Normalize QB metrics"""
+        normalized_data = self.qb_stats.copy()
+        
+        for metric in metrics:
+            if metric in normalized_data.columns:
+                mean = normalized_data[metric].mean()
+                std = normalized_data[metric].std()
+                if std > 0:
+                    normalized_data[f'{metric}_normalized'] = (
+                        (normalized_data[metric] - mean) / std
+                    )
+                else:
+                    normalized_data[f'{metric}_normalized'] = 0
+            else:
+                logging.warning(f"Metric '{metric}' not found in data")
+        
+        return normalized_data
+
+    def calculate_position_value(self, position: str, weights: Dict[str, float]) -> pd.Series:
+        """Calculate QB value scores"""
+        if position != 'QB':
+            raise ValueError("This implementation only supports QB valuation")
+            
+        value_score = pd.Series(0, index=self.qb_stats.index)
+        for metric, weight in weights.items():
+            if f'{metric}_normalized' in self.qb_stats.columns:
+                value_score += self.qb_stats[f'{metric}_normalized'] * weight
+            
+        return value_score
+
+    def adjust_for_age(self, value_score: pd.Series, peak_age: int = 27) -> pd.Series:
+        """Adjust value based on age"""
+        # Convert birth_date to age
+        self.qb_stats['age'] = pd.to_datetime('now').year - pd.to_datetime(self.qb_stats['birth_date']).dt.year
+        
+        age_multiplier = 1 - (abs(self.qb_stats['age'] - peak_age) * 0.1)
+        age_multiplier = age_multiplier.clip(0.5, 1.0)
+        
+        return value_score * age_multiplier
