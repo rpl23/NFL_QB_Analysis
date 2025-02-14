@@ -1,0 +1,73 @@
+import nfl_data_py as nfl
+import pandas as pd
+import logging
+from pathlib import Path
+import os
+
+class NFLStatsCollector:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.setup_logging()
+        self.data_dir = Path(__file__).parent.parent.parent / 'data'
+        self.raw_dir = self.data_dir / 'raw'
+        
+    def setup_logging(self):
+        """Set up logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+    
+    def collect_player_stats(self, seasons):
+        """
+        Collect player stats for specified seasons
+        
+        Args:
+            seasons (list): List of seasons to collect data for (e.g., [2022, 2023])
+        """
+        try:
+            self.logger.info(f"Collecting player stats for seasons: {seasons}")
+            
+            # Collect weekly stats using pbp data which includes player stats
+            pbp_stats = nfl.import_pbp_data(seasons)
+            
+            # Collect player data
+            players = nfl.import_players()
+            
+            # Save data to CSV files
+            if not self.raw_dir.exists():
+                self.raw_dir.mkdir(parents=True)
+                
+            pbp_stats.to_csv(self.raw_dir / 'pbp_stats.csv', index=False)
+            players.to_csv(self.raw_dir / 'players.csv', index=False)
+            
+            self.logger.info("Successfully collected and saved player stats")
+            
+            # Return basic info about the collected data
+            return {
+                'pbp_stats_shape': pbp_stats.shape,
+                'players_shape': players.shape,
+                'seasons': seasons
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error collecting player stats: {str(e)}")
+            raise
+
+def main():
+    # Initialize collector
+    collector = NFLStatsCollector()
+    
+    # Collect data for 2021-2024 seasons
+    seasons = [2021, 2022, 2023, 2024]
+    
+    try:
+        results = collector.collect_player_stats(seasons)
+        print(f"Data collection complete!")
+        print(f"Play by play stats shape: {results['pbp_stats_shape']}")
+        print(f"Players data shape: {results['players_shape']}")
+    except Exception as e:
+        print(f"Error in data collection: {str(e)}")
+
+if __name__ == "__main__":
+    main()
