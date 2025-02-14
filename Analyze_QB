@@ -1,0 +1,166 @@
+from .process_player_data import NFLPlayerValuation
+from typing import Dict, List
+import pandas as pd
+import os
+import logging
+
+def setup_logging():
+    """Configure logging with appropriate format and level"""
+    # Create logs directory in the project directory
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(os.path.join(log_dir, 'qb_valuation.log'))
+        ]
+    )
+
+def analyze_qb_metrics(processor: NFLPlayerValuation, 
+                      metrics: List[str], 
+                      weights: Dict[str, float],
+                      top_n: int = 5) -> pd.DataFrame:
+    """
+    Analyze QB performance metrics using the NFLPlayerValuation processor
+    
+    Args:
+        processor: Initialized NFLPlayerValuation instance
+        metrics: List of metrics to analyze
+        weights: Dictionary of metric weights
+        top_n: Number of top QBs to analyze
+    
+    Returns:
+        DataFrame containing processed QB valuations
+    """
+    # Normalize metrics for QBs specifically
+    normalized_data = processor.normalize_metrics(metrics, by_position=True)
+    
+    # Calculate QB value scores
+    value_scores = processor.calculate_position_value('QB', weights)
+    
+    # Adjust for age
+    age_adjusted_scores = processor.adjust_for_age(value_scores)
+    
+    # Combine all data
+    results = pd.DataFrame({
+        'player_id': normalized_data['passer_player_id'],
+        'value_score': age_adjusted_scores,
+    })
+    
+    # Add raw metrics
+    for metric in metrics:
+        if metric in normalized_data.columns:
+            results[f'{metric}_raw'] = normalized_data[metric]
+            results[f'{metric}_normalized'] = normalized_data[f'{metric}_normalized']
+    
+    # Add player information
+    results = results.merge(
+        processor.players_data[['smart_id', 'display_name', 'position']],
+        left_on='player_id',
+        right_on='smart_id',
+        how='left'
+    )
+    
+    # Calculate age from birth_date
+    results = results.merge(
+        processor.qb_stats[['passer_player_id', 'age']],
+        left_on='player_id',
+        right_on='passer_player_id',
+        how='left'
+    )
+    
+    return results.sort_values('value_score', ascending=False)
+
+def print_qb_analysis(qb_data: pd.DataFrame, metrics: List[str]):
+    """Print detailed analysis of QB performance"""
+    print("\nDetailed Analysis of Top QBs:")
+    
+    for _, qb in qb_data.iterrows():
+        print(f"\n{qb['display_name']} (Age: {int(qb['age'])})")
+        print(f"  Overall Value Score: {qb['value_score']:.3f}")
+        
+        print("\n  Performance Metrics (Raw | Normalized):")
+        for metric in metrics:
+            if f'{metric}_raw' in qb and f'{metric}_normalized' in qb:
+                raw_val = qb[f'{metric}_raw']
+                norm_val = qb[f'{metric}_normalized']
+                print(f"  {metric.replace('_', ' ').title()}: "
+                      f"{raw_val:.2f} | {norm_val:.2f}")
+        
+        # Add volume stats if available
+        if all(col in qb_data.columns for col in ['pass_attempt', 'passing_yards', 'touchdown']):
+            print("\n  Volume Stats:")
+            print(f"  Total Attempts: {int(qb['pass_attempt']):,}")
+            print(f"  Total Yards: {int(qb['passing_yards']):,}")
+            print(f"  Touchdowns: {int(qb['touchdown'])}")
+            print(f"  Interceptions: {int(qb['interception'])}")
+            print(f"  Sacks: {int(qb['sack'])}")
+
+def main():
+    """Main execution function"""
+    setup_logging()
+    logging.info("Starting QB valuation analysis")
+    
+    try:
+        # Initialize processor
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'Data')
+        processor = NFLPlayerValuation(
+            pbp_path=os.path.join(data_dir, 'Raw', 'pbp_stats.csv'),
+            players_path=os.path.join(data_dir, 'Raw', 'players.csv')
+        )
+        
+        # Define metrics and weights
+        metrics_to_normalize = [
+            'completion_percentage',
+            'yards_per_attempt',
+            'touchdown_rate',
+            'interception_rate',
+            'sack_rate',
+            'third_down_conversion_rate',
+            'avg_epa'
+        ]
+        
+        weights = {
+            'completion_percentage': 0.20,
+            'yards_per_attempt': 0.20,
+            'touchdown_rate': 0.15,
+            'interception_rate': -0.15,
+            'sack_rate': -0.10,
+            'third_down_conversion_rate': 0.10,
+            'avg_epa': 0.10
+        }
+        
+        # Validate weights
+        total_weight = sum(abs(w) for w in weights.values())
+        if not abs(total_weight - 1.0) < 0.001:
+            logging.warning(f"Weights sum to {total_weight}, not 1.0")
+        
+        # Process QB data
+        results = analyze_qb_metrics(
+            processor=processor,
+            metrics=metrics_to_normalize,
+            weights=weights
+        )
+        
+        # Save results
+        output_path = os.path.join(data_dir, 'Processed', 'qb_valuations.csv')
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        results.to_csv(output_path, index=False)
+        logging.info(f"Results saved to {output_path}")
+        
+        # Print analysis of top QBs
+        print_qb_analysis(results.head(), metrics_to_normalize)
+        
+    except Exception as e:
+        logging.error(f"Error in main execution: {str(e)}")
+        raise
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logging.error(f"Error in main: {str(e)}")
+        raise
